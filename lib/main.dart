@@ -82,6 +82,22 @@ class TimeSorteado {
   );
 }
 
+// --- MODELO DE ESTATÍSTICAS DO TORNEIO ---
+class EstatisticasTime {
+  TimeSorteado time;
+  int pontos = 0;
+  int jogos = 0;
+  int vitorias = 0;
+  int empates = 0;
+  int derrotas = 0;
+  int golsPro = 0;
+  int golsContra = 0;
+
+  int get saldoGols => golsPro - golsContra;
+
+  EstatisticasTime({required this.time});
+}
+
 // NOVO MODELO: Para controlar o limite de 5 e a data/hora
 class HistoricoSorteio {
   String dataHora;
@@ -922,26 +938,271 @@ class _TelaSorteioState extends State<TelaSorteio> {
 
 // --- TELA 3: TORNEIO ---
 
-class TelaTorneio extends StatelessWidget {
+class TelaTorneio extends StatefulWidget {
   const TelaTorneio({super.key});
 
   @override
+  State<TelaTorneio> createState() => _TelaTorneioState();
+}
+
+class _TelaTorneioState extends State<TelaTorneio> {
+  int _faseAtual = 0; // 0: Menu de Escolha, 1: Tabela (Pontos Corridos), 2: Configurar Chaves, 3: Chaves Geradas
+  
+  List<EstatisticasTime> _tabelaGeral = [];
+  List<List<EstatisticasTime>> _grupos = [];
+  int _qtdGrupos = 2;
+
+  void _iniciarPontosCorridos() {
+    setState(() {
+      _tabelaGeral = timesSalvosTorneio.map((t) => EstatisticasTime(time: t)).toList();
+      _faseAtual = 1;
+    });
+  }
+
+  void _gerarGrupos() {
+    if (timesSalvosTorneio.length < _qtdGrupos) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Times insuficientes para essa quantidade de grupos!'))
+      );
+      return;
+    }
+
+    List<TimeSorteado> pool = List.from(timesSalvosTorneio)..shuffle();
+    _grupos = List.generate(_qtdGrupos, (_) => []);
+
+    int indexGrupo = 0;
+    for (var time in pool) {
+      _grupos[indexGrupo % _qtdGrupos].add(EstatisticasTime(time: time));
+      indexGrupo++;
+    }
+
+    setState(() {
+      _faseAtual = 3;
+    });
+  }
+
+  // Widget reaproveitável para desenhar uma Tabela de Classificação
+  Widget _construirTabela(List<EstatisticasTime> tabela) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        columnSpacing: 15,
+        headingTextStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+        columns: const [
+          DataColumn(label: Text('Time')),
+          DataColumn(label: Text('P'), tooltip: 'Pontos'),
+          DataColumn(label: Text('J'), tooltip: 'Jogos'),
+          DataColumn(label: Text('V'), tooltip: 'Vitórias'),
+          DataColumn(label: Text('E'), tooltip: 'Empates'),
+          DataColumn(label: Text('D'), tooltip: 'Derrotas'),
+          DataColumn(label: Text('SG'), tooltip: 'Saldo de Gols'),
+        ],
+        rows: tabela.map((est) {
+          return DataRow(cells: [
+            DataCell(Text(est.time.nome, style: const TextStyle(fontWeight: FontWeight.bold))),
+            DataCell(Text('${est.pontos}')),
+            DataCell(Text('${est.jogos}')),
+            DataCell(Text('${est.vitorias}')),
+            DataCell(Text('${est.empates}')),
+            DataCell(Text('${est.derrotas}')),
+            DataCell(Text('${est.saldoGols}')),
+          ]);
+        }).toList(),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return timesSalvosTorneio.isEmpty
-        ? const Center(child: Text('Nenhum time salvo. Vá no Sorteio primeiro e clique em Enviar ao Torneio.'))
-        : ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: timesSalvosTorneio.length,
-            itemBuilder: (context, index) {
-              return Card(
-                child: ListTile(
-                  leading: const Icon(Icons.shield, color: Colors.green),
-                  title: Text(timesSalvosTorneio[index].nome),
-                  subtitle: Text('${timesSalvosTorneio[index].jogadores.length} Jogadores carregados.'),
-                  trailing: const Icon(Icons.check_circle, color: Colors.green),
+    if (timesSalvosTorneio.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(20.0),
+          child: Text('Nenhum time salvo! Vá no Sorteio, gere os times e clique em "Enviar ao Torneio".', textAlign: TextAlign.center),
+        ),
+      );
+    }
+
+    return Scaffold(
+      body: Column(
+        children: [
+          // CABEÇALHO COM BOTÃO DE VOLTAR SE NÃO ESTIVER NO MENU
+          if (_faseAtual != 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              color: Colors.green.shade50,
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.green),
+                    onPressed: () => setState(() => _faseAtual = 0),
+                  ),
+                  const Text('Trocar formato do torneio', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                ],
+              ),
+            ),
+
+          Expanded(
+            child: _faseAtual == 0 
+              ? _buildMenuEscolha() 
+              : _faseAtual == 1 
+                ? _buildPontosCorridos() 
+                : _faseAtual == 2 
+                  ? _buildConfigurarChaves() 
+                  : _buildVisualizarChaves(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- TELAS INTERNAS DO TORNEIO ---
+
+  Widget _buildMenuEscolha() {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text('Como será a disputa hoje?', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 30),
+          
+          // CARD: PONTOS CORRIDOS
+          InkWell(
+            onTap: _iniciarPontosCorridos,
+            child: Card(
+              elevation: 4,
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Row(
+                  children: [
+                    const Icon(Icons.format_list_numbered, size: 50, color: Colors.green),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Text('Por Tabela (Série A)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          Text('Pontos corridos. Todos jogam contra todos num grupo único.', style: TextStyle(color: Colors.grey)),
+                        ],
+                      ),
+                    )
+                  ],
                 ),
-              );
-            },
-          );
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 20),
+
+          // CARD: CHAVES
+          InkWell(
+            onTap: () => setState(() => _faseAtual = 2),
+            child: Card(
+              elevation: 4,
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Row(
+                  children: [
+                    const Icon(Icons.account_tree, size: 50, color: Colors.blue),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: const [
+                          Text('Por Chave (Grupos)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                          Text('Divide os times em grupos. O topo avança para as finais.', style: TextStyle(color: Colors.grey)),
+                        ],
+                      ),
+                    )
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPontosCorridos() {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text('Classificação Geral', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          ),
+          _construirTabela(_tabelaGeral),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConfigurarChaves() {
+    return Padding(
+      padding: const EdgeInsets.all(20.0),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.account_tree, size: 60, color: Colors.blue),
+          const SizedBox(height: 20),
+          Text('Temos ${timesSalvosTorneio.length} times cadastrados.', style: const TextStyle(fontSize: 18)),
+          const SizedBox(height: 20),
+          const Text('Quantos grupos (chaves) você quer formar?', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.remove_circle, size: 40, color: Colors.red),
+                onPressed: () => setState(() { if (_qtdGrupos > 2) _qtdGrupos--; }),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text('$_qtdGrupos', style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle, size: 40, color: Colors.green),
+                onPressed: () => setState(() { if (_qtdGrupos < timesSalvosTorneio.length) _qtdGrupos++; }),
+              ),
+            ],
+          ),
+          const SizedBox(height: 40),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(50), backgroundColor: Colors.blue, foregroundColor: Colors.white),
+            onPressed: _gerarGrupos,
+            child: const Text('GERAR CHAVES'),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVisualizarChaves() {
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _grupos.length,
+      itemBuilder: (context, index) {
+        return Card(
+          elevation: 2,
+          margin: const EdgeInsets.only(bottom: 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                color: Colors.blue.shade100,
+                child: Text('Grupo ${String.fromCharCode(65 + index)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              ),
+              _construirTabela(_grupos[index]),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
