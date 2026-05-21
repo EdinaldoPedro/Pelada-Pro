@@ -1,0 +1,26 @@
+# Flutter/Dart/Pub
+.dart_tool/
+.packages
+.pub/
+pubspec.lock
+
+generated_plugin_registrant.dart
+
+# IntelliJ
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Build output
+build/
+
+# Firebase
+ios/Runner/GoogleService-Info.plist
+android/app/google-services.json
