@@ -68,15 +68,46 @@ class TimeSorteado {
   List<Jogador> jogadores;
 
   TimeSorteado({required this.nome, required this.jogadores});
+
+  // Novo: ToMap para salvar no histórico
+  Map<String, dynamic> toMap() => {
+    'nome': nome,
+    'jogadores': jogadores.map((j) => j.toMap()).toList(),
+  };
+
+  // Novo: FromMap para ler do histórico
+  factory TimeSorteado.fromMap(Map<String, dynamic> map) => TimeSorteado(
+    nome: map['nome'],
+    jogadores: (map['jogadores'] as List).map((j) => Jogador.fromMap(j as Map<String, dynamic>)).toList(),
+  );
+}
+
+// NOVO MODELO: Para controlar o limite de 5 e a data/hora
+class HistoricoSorteio {
+  String dataHora;
+  List<TimeSorteado> times;
+
+  HistoricoSorteio({required this.dataHora, required this.times});
+
+  Map<String, dynamic> toMap() => {
+    'dataHora': dataHora,
+    'times': times.map((t) => t.toMap()).toList(),
+  };
+
+  factory HistoricoSorteio.fromMap(Map<String, dynamic> map) => HistoricoSorteio(
+    dataHora: map['dataHora'],
+    times: (map['times'] as List).map((t) => TimeSorteado.fromMap(t as Map<String, dynamic>)).toList(),
+  );
 }
 
 // --- ESTADO GLOBAL ---
 List<Jogador> jogadoresCadastrados = [];
 List<TimeSorteado> timesSalvosTorneio = [];
+List<HistoricoSorteio> historicoSorteios = []; // NOVO: Guarda os 5 últimos sorteios
 
 // --- TELA PRINCIPAL E CONTROLE DE ARQUIVOS ---
 
-// --- TELA PRINCIPAL E CONTROLE DE ARQUIVOS ---
+
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -101,7 +132,7 @@ class _MainScreenState extends State<MainScreen> {
     if (jogadoresJson != null) {
       final List<dynamic> decoded = jsonDecode(jogadoresJson);
       setState(() {
-        jogadoresCadastrados = decoded.map((item) => Jogador.fromMap(item)).toList();
+        jogadoresCadastrados = decoded.map((item) => Jogador.fromMap(item as Map<String, dynamic>)).toList();
         if (_tituloAtual == 'Cadastro de Jogadores') {
           _telaAtual = TelaCadastro(onDataChanged: () => setState(() {}));
         }
@@ -527,7 +558,66 @@ class TelaSorteio extends StatefulWidget {
 class _TelaSorteioState extends State<TelaSorteio> {
   int _qtdPorTime = 5;
   int _regraSorteio = 2;
+  bool _considerarGoleiros = true; // NOVO: Controle de goleiro
+  
   final Map<Nota, int> _notasManuais = {Nota.A: 1, Nota.B: 1, Nota.C: 1, Nota.D: 1, Nota.E: 0};
+
+  @override
+  void initState() {
+    super.initState();
+    _carregarHistorico();
+  }
+
+  // Carrega os sorteios salvos do aparelho
+  Future<void> _carregarHistorico() async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? historicoJson = prefs.getString('bd_historico');
+    if (historicoJson != null) {
+      final List<dynamic> decoded = jsonDecode(historicoJson);
+      setState(() {
+        historicoSorteios = decoded.map((item) => HistoricoSorteio.fromMap(item as Map<String, dynamic>)).toList();
+      });
+    }
+  }
+
+  // Função para salvar o sorteio atual (Máximo 5)
+  Future<void> _salvarNoHistorico(List<TimeSorteado> times) async {
+    if (historicoSorteios.length >= 5) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Limite de 5 sorteios atingido! Exclua um antigo abaixo para salvar.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final agora = DateTime.now();
+    final dataHoraStr = "${agora.day.toString().padLeft(2, '0')}/${agora.month.toString().padLeft(2, '0')}/${agora.year} às ${agora.hour.toString().padLeft(2, '0')}:${agora.minute.toString().padLeft(2, '0')}";
+
+    setState(() {
+      // insert(0, ...) coloca no início da lista, garantindo a ordem do mais recente primeiro
+      historicoSorteios.insert(0, HistoricoSorteio(dataHora: dataHoraStr, times: times));
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final String encoded = jsonEncode(historicoSorteios.map((h) => h.toMap()).toList());
+    await prefs.setString('bd_historico', encoded);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Sorteio gravado com sucesso!'), backgroundColor: Colors.green),
+    );
+  }
+
+  Future<void> _excluirDoHistorico(int index) async {
+    setState(() {
+      historicoSorteios.removeAt(index);
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final String encoded = jsonEncode(historicoSorteios.map((h) => h.toMap()).toList());
+    await prefs.setString('bd_historico', encoded);
+  }
 
   void _realizarSorteio() {
     List<Jogador> ativos = jogadoresCadastrados.where((j) => j.presente).toList();
@@ -539,50 +629,89 @@ class _TelaSorteioState extends State<TelaSorteio> {
       return;
     }
 
-    int qtdTimes = (ativos.length / _qtdPorTime).ceil();
+    // 1. Separa Goleiros e Linha logo no início com base no Checkbox
+    List<Jogador> goleiros = _considerarGoleiros ? ativos.where((j) => j.isGoleiro).toList() : [];
+    List<Jogador> linha = _considerarGoleiros ? ativos.where((j) => !j.isGoleiro).toList() : List.from(ativos);
+
+    if (linha.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não há jogadores de linha suficientes!'), backgroundColor: Colors.orange)
+      );
+      return;
+    }
+
+    // 2. A quantidade de times e as capacidades são baseadas APENAS na LINHA
+    int qtdTimes = (linha.length / _qtdPorTime).ceil();
     List<TimeSorteado> times = List.generate(qtdTimes, (i) => TimeSorteado(nome: 'Time ${i + 1}', jogadores: []));
     
-    List<Jogador> pool = List.from(ativos)..shuffle();
+    List<int> capacidadesLinha = List.filled(qtdTimes, _qtdPorTime);
+    int resto = linha.length % _qtdPorTime;
+    if (resto != 0) {
+      capacidadesLinha[qtdTimes - 1] = resto; // O último time fica com a sobra exata da linha
+    }
 
-    if (_regraSorteio == 1) {
-      for (int i = 0; i < pool.length; i++) {
-        times[i % qtdTimes].jogadores.add(pool[i]);
-      }
-    } else if (_regraSorteio == 2) {
-      List<Jogador> goleiros = pool.where((j) => j.isGoleiro).toList();
-      List<Jogador> linha = pool.where((j) => !j.isGoleiro).toList();
-      linha.sort((a, b) => a.nota.index.compareTo(b.nota.index));
+    goleiros.shuffle();
+    linha.shuffle();
 
-      int indexTime = 0;
-      for (var g in goleiros) {
-        times[indexTime % qtdTimes].jogadores.add(g);
-        indexTime++;
+    // 3. Distribui os Goleiros primeiro (Um por time, não afeta o limite da linha)
+    int indexTimeGoleiro = 0;
+    for (var g in goleiros) {
+      times[indexTimeGoleiro % qtdTimes].jogadores.add(g);
+      indexTimeGoleiro++;
+    }
+
+    // 4. Função inteligente para distribuir a LINHA respeitando o limite
+    int indexTimeLinha = 0;
+    void alocarLinha(Jogador j) {
+      int tentativas = 0;
+      
+      // Conta apenas a linha dentro do time para ver se bateu o limite
+      int getQtdLinha(TimeSorteado t) => _considerarGoleiros ? t.jogadores.where((p) => !p.isGoleiro).length : t.jogadores.length;
+
+      while (getQtdLinha(times[indexTimeLinha % qtdTimes]) >= capacidadesLinha[indexTimeLinha % qtdTimes]) {
+        indexTimeLinha++;
+        tentativas++;
+        if (tentativas > qtdTimes) break; // Trava de segurança
       }
+      times[indexTimeLinha % qtdTimes].jogadores.add(j);
+      indexTimeLinha++;
+    }
+
+    // 5. Executa a regra escolhida apenas para a LINHA
+    if (_regraSorteio == 1) { 
+      // REGRA 1: 100% Aleatório
       for (var j in linha) {
-        times[indexTime % qtdTimes].jogadores.add(j);
-        indexTime++;
+        alocarLinha(j);
       }
-    } else if (_regraSorteio == 3) {
+    } else if (_regraSorteio == 2) { 
+      // REGRA 2: Equilibrado (Máquina Decide)
+      linha.sort((a, b) => a.nota.index.compareTo(b.nota.index)); // Do melhor pro pior
+      
+      for (var j in linha) {
+        alocarLinha(j);
+      }
+    } else if (_regraSorteio == 3) { 
+      // REGRA 3: Manual (Definir notas)
       for (var time in times) {
+        int indexDoTime = times.indexOf(time);
+        int capTime = capacidadesLinha[indexDoTime];
+        
         for (var nota in Nota.values) {
           int necessarios = _notasManuais[nota] ?? 0;
           for (int i = 0; i < necessarios; i++) {
-            int idx = pool.indexWhere((j) => j.nota == nota);
+            int getQtdLinha() => _considerarGoleiros ? time.jogadores.where((p) => !p.isGoleiro).length : time.jogadores.length;
+            if (getQtdLinha() >= capTime) break; // Trava se bater o limite da linha
+            
+            int idx = linha.indexWhere((j) => j.nota == nota);
             if (idx != -1) {
-              time.jogadores.add(pool.removeAt(idx));
+              time.jogadores.add(linha.removeAt(idx));
             }
           }
         }
       }
-      int indexTime = 0;
-      while (pool.isNotEmpty) {
-        if (times[indexTime % qtdTimes].jogadores.length < _qtdPorTime) {
-           times[indexTime % qtdTimes].jogadores.add(pool.removeAt(0));
-        }
-        indexTime++;
-        if (pool.isNotEmpty && times.every((t) => t.jogadores.length >= _qtdPorTime)) {
-            times.first.jogadores.add(pool.removeAt(0));
-        }
+      // Pega a linha que sobrou da regra manual e distribui
+      for (var j in linha) {
+        alocarLinha(j);
       }
     }
 
@@ -613,31 +742,41 @@ class _TelaSorteioState extends State<TelaSorteio> {
                         subtitle: Text('${t.jogadores.length} atletas'),
                         children: t.jogadores.map((j) => ListTile(
                           title: Text(j.nome),
-                          trailing: Text(j.isGoleiro ? 'Goleiro' : 'Nota: ${j.nota.name}'),
+                          trailing: Text(j.isGoleiro && _considerarGoleiros ? 'Goleiro' : 'Nota: ${j.nota.name}'),
                         )).toList(),
                       ),
                     );
                   },
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.save),
-                  label: const Text('Salvar para Torneio'),
-                  style: ElevatedButton.styleFrom(
-                    minimumSize: const Size.fromHeight(50),
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.save_outlined),
+                      label: const Text('Salvar Sorteio'),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _salvarNoHistorico(times);
+                      },
+                    ),
                   ),
-                  onPressed: () {
-                    setState(() { timesSalvosTorneio = times; });
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Times enviados para a aba Torneio!'))
-                    );
-                  },
-                ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.emoji_events),
+                      label: const Text('Enviar ao Torneio'),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                      onPressed: () {
+                        setState(() { timesSalvosTorneio = times; });
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Times enviados para a aba Torneio!'))
+                        );
+                      },
+                    ),
+                  ),
+                ],
               )
             ],
           ),
@@ -660,13 +799,29 @@ class _TelaSorteioState extends State<TelaSorteio> {
           const SizedBox(height: 20),
           
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Jogadores por time: '),
-              DropdownButton<int>(
-                value: _qtdPorTime,
-                onChanged: (val) => setState(() => _qtdPorTime = val!),
-                items: [3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => DropdownMenuItem(value: n, child: Text(n.toString()))).toList(),
+              Row(
+                children: [
+                  const Text('Jogadores por time: '),
+                  DropdownButton<int>(
+                    value: _qtdPorTime,
+                    onChanged: (val) => setState(() => _qtdPorTime = val!),
+                    items: [3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => DropdownMenuItem(value: n, child: Text(n.toString()))).toList(),
+                  ),
+                ],
               ),
+              // NOVO COMPONENTE: Caixa de seleção para Goleiro
+              Row(
+                children: [
+                  const Text('Separar Goleiros?'),
+                  Checkbox(
+                    value: _considerarGoleiros,
+                    activeColor: Colors.green,
+                    onChanged: (val) => setState(() => _considerarGoleiros = val!),
+                  )
+                ],
+              )
             ],
           ),
           const Divider(),
@@ -721,12 +876,44 @@ class _TelaSorteioState extends State<TelaSorteio> {
             )),
           ],
 
-          const SizedBox(height: 30),
+          const SizedBox(height: 20),
           ElevatedButton(
             style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(50)),
             onPressed: _realizarSorteio,
             child: const Text('SORTEAR TIMES'),
           ),
+          
+          const SizedBox(height: 30),
+          // NOVO PAINEL VISUAL: Histórico com os 5 slots e opção de apagar
+          Text('Sorteios Salvos (${historicoSorteios.length}/5)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const Divider(),
+          if (historicoSorteios.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Center(child: Text('Nenhum sorteio salvo na memória.', style: TextStyle(color: Colors.grey))),
+            )
+          else
+            ...List.generate(historicoSorteios.length, (index) {
+              final item = historicoSorteios[index];
+              return Card(
+                color: Colors.green.shade50,
+                margin: const EdgeInsets.symmetric(vertical: 6),
+                child: ExpansionTile(
+                  leading: const Icon(Icons.history_toggle_off, color: Colors.green),
+                  title: Text(item.dataHora, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text('${item.times.length} Equipes criadas'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () => _excluirDoHistorico(index),
+                  ),
+                  children: item.times.map((t) => ListTile(
+                    dense: true,
+                    title: Text(t.nome, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(t.jogadores.map((j) => j.nome).join(', ')),
+                  )).toList(),
+                ),
+              );
+            }),
         ],
       ),
     );
@@ -741,7 +928,7 @@ class TelaTorneio extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return timesSalvosTorneio.isEmpty
-        ? const Center(child: Text('Nenhum time salvo. Vá no Sorteio primeiro e clique em salvar.'))
+        ? const Center(child: Text('Nenhum time salvo. Vá no Sorteio primeiro e clique em Enviar ao Torneio.'))
         : ListView.builder(
             padding: const EdgeInsets.all(16),
             itemCount: timesSalvosTorneio.length,
