@@ -45,12 +45,21 @@ class Jogador {
 class TimeSorteado {
   String nome;
   List<Jogador> jogadores;
+  int corPrimaria;
+  int corSecundaria;
 
-  TimeSorteado({required this.nome, required this.jogadores});
+  TimeSorteado({
+    required this.nome,
+    required this.jogadores,
+    this.corPrimaria = 0xFF4CAF50,  // Verde padrão
+    this.corSecundaria = 0xFF2196F3, // Azul padrão
+  });
 
   Map<String, dynamic> toMap() => {
         'nome': nome,
         'jogadores': jogadores.map((j) => j.toMap()).toList(),
+        'corPrimaria': corPrimaria,
+        'corSecundaria': corSecundaria,
       };
 
   factory TimeSorteado.fromMap(Map<String, dynamic> map) => TimeSorteado(
@@ -58,7 +67,27 @@ class TimeSorteado {
         jogadores: (map['jogadores'] as List)
             .map((j) => Jogador.fromMap(j as Map<String, dynamic>))
             .toList(),
+        corPrimaria: map['corPrimaria'] ?? 0xFF4CAF50,
+        corSecundaria: map['corSecundaria'] ?? 0xFF2196F3,
       );
+}
+
+// NOVO: Função Global para desenhar o escudo do time dividido em duas cores!
+Widget construirEscudo(TimeSorteado time, {double tamanho = 24}) {
+  return Container(
+    width: tamanho,
+    height: tamanho,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      border: Border.all(color: Colors.black26, width: 1),
+      gradient: LinearGradient(
+        colors: [Color(time.corPrimaria), Color(time.corSecundaria)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        stops: const [0.5, 0.5], // Isso cria o corte duro no meio (Estilo escudo)
+      ),
+    ),
+  );
 }
 
 class EstatisticasTime {
@@ -744,8 +773,17 @@ class _MainScreenState extends State<MainScreen> {
       ordenarJogadores();
     }
 
-    // Carrega a memória do Torneio
+    // Carrega o histórico de sorteios
+    final String? historicoJson = prefs.getString('bd_historico');
+    if (historicoJson != null) {
+      historicoSorteios = (jsonDecode(historicoJson) as List)
+          .map((item) => HistoricoSorteio.fromMap(item as Map<String, dynamic>))
+          .toList();
+    }
+
+    // Carrega torneios e dados globais
     await carregarTorneioLocal();
+    await carregarTorneiosLocal();
 
     setState(() {
       if (_tituloAtual == 'Cadastro de Jogadores') {
@@ -760,121 +798,6 @@ class _MainScreenState extends State<MainScreen> {
       _tituloAtual = titulo;
     });
     Navigator.pop(context);
-  }
-
-  Future<void> _exportarArquivoCSV() async {
-    Navigator.pop(context);
-    if (jogadoresCadastrados.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Nenhum jogador para exportar!'),
-            backgroundColor: Colors.orange),
-      );
-      return;
-    }
-
-    try {
-      String conteudoCSV = "Nome,Nota,Goleiro,Presente\n";
-      for (var j in jogadoresCadastrados) {
-        conteudoCSV += "${j.nome},${j.nota.name},${j.isGoleiro},${j.presente}\n";
-      }
-
-      final directory = await getTemporaryDirectory();
-      final path = '${directory.path}/pelada_backup.csv';
-      final file = File(path);
-      await file.writeAsString(conteudoCSV);
-
-      await Share.shareXFiles([XFile(path)], text: 'Backup Pelada Pro');
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao exportar: $e'), backgroundColor: Colors.red),
-      );
-    }
-  }
-
-  Future<void> _importarArquivoCSV() async {
-    Navigator.pop(context);
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['csv'],
-      );
-
-      if (result != null) {
-        String contents = "";
-
-        // NOVO: Verifica se está na Web ou no Celular/Desktop
-        if (kIsWeb) {
-          if (result.files.single.bytes != null) {
-            // Na Web, decodificamos os bytes da memória diretamente
-            contents = utf8.decode(result.files.single.bytes!);
-          } else {
-            throw Exception('Não foi possível ler os dados do arquivo na Web.');
-          }
-        } else {
-          // No Celular, lemos pelo caminho do arquivo
-          if (result.files.single.path != null) {
-            final file = File(result.files.single.path!);
-            contents = await file.readAsString();
-          } else {
-            throw Exception('Caminho do arquivo não encontrado.');
-          }
-        }
-
-        final linhas = contents.split('\n');
-        final temporario = <Jogador>[];
-
-        for (var linha in linhas) {
-          if (linha.trim().isEmpty || linha.toLowerCase().startsWith('nome,')) continue;
-
-          final partes = linha.split(',');
-          if (partes.length >= 4) {
-            temporario.add(Jogador(
-              nome: partes[0].trim(),
-              nota: Nota.values.firstWhere((e) => e.name == partes[1].trim()),
-              isGoleiro: partes[2].trim() == 'true',
-              presente: partes[3].trim() == 'true',
-            ));
-          }
-        }
-
-        if (temporario.isNotEmpty) {
-          setState(() {
-            jogadoresCadastrados = temporario;
-            ordenarJogadores();
-          });
-
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('bd_jogadores',
-              jsonEncode(jogadoresCadastrados.map((j) => j.toMap()).toList()));
-
-          _mudarTela(
-            TelaCadastro(onDataChanged: () => setState(() {})),
-            'Cadastro de Jogadores',
-          );
-
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-                content: Text('${temporario.length} Jogadores restaurados com sucesso!'),
-                backgroundColor: Colors.green),
-          );
-        } else {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('O arquivo CSV parece estar vazio ou no formato errado.'),
-                backgroundColor: Colors.orange),
-          );
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao importar arquivo: $e'), backgroundColor: Colors.red),
-      );
-    }
   }
 
   @override
@@ -921,20 +844,20 @@ class _MainScreenState extends State<MainScreen> {
                   _mudarTela(TelaTorneio(key: UniqueKey()), 'Organizar Campeonato'),
             ),
             const Divider(),
-            const Padding(
-              padding: EdgeInsets.only(left: 16, top: 8, bottom: 8),
-              child: Text('Banco de Dados (.csv)',
-                  style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
-            ),
             ListTile(
-              leading: const Icon(Icons.upload_file),
-              title: const Text('Salvar/Compartilhar .csv'),
-              onTap: _exportarArquivoCSV,
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_rounded),
-              title: const Text('Importar arquivo .csv'),
-              onTap: _importarArquivoCSV,
+              leading: const Icon(Icons.storage_rounded, color: Colors.green),
+              title: const Text('Backup e Restauração'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TelaBackup(
+                      onDataRestored: () => setState(() {}),
+                    ),
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -943,6 +866,426 @@ class _MainScreenState extends State<MainScreen> {
         bottom: true,
         child: _telaAtual,
       ),
+    );
+  }
+} // fecha _MainScreenState
+
+// =============================================================================
+// TELA DE BACKUP E RESTAURAÇÃO
+// =============================================================================
+
+class TelaBackup extends StatefulWidget {
+  final VoidCallback onDataRestored;
+  const TelaBackup({super.key, required this.onDataRestored});
+
+  @override
+  State<TelaBackup> createState() => _TelaBackupState();
+}
+
+class _TelaBackupState extends State<TelaBackup>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Backup e Restauração'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(icon: Icon(Icons.people), text: 'Jogadores'),
+            Tab(icon: Icon(Icons.shuffle), text: 'Sorteios'),
+            Tab(icon: Icon(Icons.emoji_events), text: 'Torneios'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _TabJogadores(onDataRestored: widget.onDataRestored),
+          _TabSorteios(onDataRestored: widget.onDataRestored),
+          _TabTorneios(onDataRestored: widget.onDataRestored),
+        ],
+      ),
+    );
+  }
+}
+
+// --- WIDGET REUTILIZÁVEL DE LAYOUT DE ABA ---
+Widget _buildLayoutAba({
+  required BuildContext context,
+  required IconData icone,
+  required Color cor,
+  required String titulo,
+  required String descricao,
+  required String totalItens,
+  required String labelExportar,
+  required String labelImportar,
+  required VoidCallback onExportar,
+  required VoidCallback onImportar,
+}) {
+  return Padding(
+    padding: const EdgeInsets.all(24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          color: cor.withOpacity(0.1),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Icon(icone, size: 44, color: cor),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(titulo,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16)),
+                      const SizedBox(height: 4),
+                      Text(descricao,
+                          style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                      const SizedBox(height: 6),
+                      Text(totalItens,
+                          style: TextStyle(color: cor, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 32),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            minimumSize: const Size.fromHeight(52),
+            backgroundColor: cor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          icon: const Icon(Icons.upload_file),
+          label: Text(labelExportar),
+          onPressed: onExportar,
+        ),
+        const SizedBox(height: 14),
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size.fromHeight(52),
+            foregroundColor: cor,
+            side: BorderSide(color: cor, width: 1.5),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+          icon: const Icon(Icons.download_rounded),
+          label: Text(labelImportar),
+          onPressed: onImportar,
+        ),
+        const SizedBox(height: 24),
+        const Divider(),
+        const SizedBox(height: 8),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.info_outline, size: 16, color: Colors.grey),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'Ao importar, os dados atuais serão substituídos pelo conteúdo do arquivo.',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+// --- ABA: JOGADORES (.csv) ---
+class _TabJogadores extends StatelessWidget {
+  final VoidCallback onDataRestored;
+  const _TabJogadores({required this.onDataRestored});
+
+  Future<void> _exportar(BuildContext context) async {
+    if (jogadoresCadastrados.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nenhum jogador para exportar!'),
+          backgroundColor: Colors.orange));
+      return;
+    }
+    try {
+      String csv = "Nome,Nota,Goleiro,Presente\n";
+      for (var j in jogadoresCadastrados) {
+        csv += "${j.nome},${j.nota.name},${j.isGoleiro},${j.presente}\n";
+      }
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/backup_jogadores.csv');
+      await file.writeAsString(csv);
+      await Share.shareXFiles([XFile(file.path)], text: 'Backup Jogadores - Pelada Pro');
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _importar(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true, // força carregar bytes, funciona com Drive/nuvem
+      );
+      if (result == null) return;
+
+      // Agora sempre usa bytes (funciona em qualquer origem)
+      final bytes = result.files.single.bytes;
+      if (bytes == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Não foi possível ler o arquivo.'),
+              backgroundColor: Colors.red));
+        }
+        return;
+      }
+      String contents = utf8.decode(bytes);
+
+      final temp = <Jogador>[];
+      for (var linha in contents.split('\n')) {
+        if (linha.trim().isEmpty || linha.toLowerCase().startsWith('nome,')) continue;
+        final p = linha.split(',');
+        if (p.length >= 4) {
+          temp.add(Jogador(
+            nome: p[0].trim(),
+            nota: Nota.values.firstWhere((e) => e.name == p[1].trim()),
+            isGoleiro: p[2].trim() == 'true',
+            presente: p[3].trim() == 'true',
+          ));
+        }
+      }
+      if (temp.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Arquivo vazio ou formato inválido.'),
+              backgroundColor: Colors.orange));
+        }
+        return;
+      }
+      jogadoresCadastrados = temp;
+      ordenarJogadores();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('bd_jogadores',
+          jsonEncode(jogadoresCadastrados.map((j) => j.toMap()).toList()));
+      onDataRestored();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('${temp.length} jogadores restaurados!'),
+            backgroundColor: Colors.green));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _buildLayoutAba(
+      context: context,
+      icone: Icons.people,
+      cor: Colors.green,
+      titulo: 'Backup de Jogadores',
+      descricao: 'Exporta e importa a lista de atletas no formato .csv.',
+      totalItens: '${jogadoresCadastrados.length} jogadores cadastrados',
+      labelExportar: 'Exportar Jogadores (.csv)',
+      labelImportar: 'Importar Jogadores (.csv)',
+      onExportar: () => _exportar(context),
+      onImportar: () => _importar(context),
+    );
+  }
+}
+
+// --- ABA: SORTEIOS (.json) ---
+class _TabSorteios extends StatelessWidget {
+  final VoidCallback onDataRestored;
+  const _TabSorteios({required this.onDataRestored});
+
+  Future<void> _exportar(BuildContext context) async {
+    if (historicoSorteios.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nenhum sorteio salvo para exportar!'),
+          backgroundColor: Colors.orange));
+      return;
+    }
+    try {
+      final json = jsonEncode(historicoSorteios.map((h) => h.toMap()).toList());
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/backup_sorteios.json');
+      await file.writeAsString(json);
+      await Share.shareXFiles([XFile(file.path)], text: 'Backup Sorteios - Pelada Pro');
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _importar(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+      if (result == null) return;
+
+      final bytes = result.files.single.bytes;
+      if (bytes == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Não foi possível ler o arquivo.'),
+              backgroundColor: Colors.red));
+        }
+        return;
+      }
+      String contents = utf8.decode(bytes);
+
+      final lista = (jsonDecode(contents) as List)
+          .map((h) => HistoricoSorteio.fromMap(h as Map<String, dynamic>))
+          .toList();
+      historicoSorteios = lista;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('bd_historico',
+          jsonEncode(historicoSorteios.map((h) => h.toMap()).toList()));
+      onDataRestored();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('${lista.length} sorteios restaurados!'),
+            backgroundColor: Colors.green));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _buildLayoutAba(
+      context: context,
+      icone: Icons.shuffle,
+      cor: Colors.blue,
+      titulo: 'Backup de Sorteios',
+      descricao: 'Exporta e importa o histórico de sorteios no formato .json.',
+      totalItens: '${historicoSorteios.length} sorteios salvos',
+      labelExportar: 'Exportar Sorteios (.json)',
+      labelImportar: 'Importar Sorteios (.json)',
+      onExportar: () => _exportar(context),
+      onImportar: () => _importar(context),
+    );
+  }
+}
+
+// --- ABA: TORNEIOS (.json) ---
+class _TabTorneios extends StatelessWidget {
+  final VoidCallback onDataRestored;
+  const _TabTorneios({required this.onDataRestored});
+
+  Future<void> _exportar(BuildContext context) async {
+    if (historicoTorneios.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Nenhum torneio salvo para exportar!'),
+          backgroundColor: Colors.orange));
+      return;
+    }
+    try {
+      final json = jsonEncode(historicoTorneios.map((t) => t.toMap()).toList());
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/backup_torneios.json');
+      await file.writeAsString(json);
+      await Share.shareXFiles([XFile(file.path)], text: 'Backup Torneios - Pelada Pro');
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  Future<void> _importar(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        withData: true,
+      );
+      if (result == null) return;
+
+      final bytes = result.files.single.bytes;
+      if (bytes == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Não foi possível ler o arquivo.'),
+              backgroundColor: Colors.red));
+        }
+        return;
+      }
+      String contents = utf8.decode(bytes);
+
+      final lista = (jsonDecode(contents) as List)
+          .map((t) => Torneio.fromMap(t as Map<String, dynamic>))
+          .toList();
+      historicoTorneios = lista;
+      await salvarTorneiosLocal();
+      onDataRestored();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('${lista.length} torneios restaurados!'),
+            backgroundColor: Colors.green));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro: $e'), backgroundColor: Colors.red));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _buildLayoutAba(
+      context: context,
+      icone: Icons.emoji_events,
+      cor: Colors.amber.shade700,
+      titulo: 'Backup de Torneios',
+      descricao: 'Exporta e importa o histórico de campeonatos no formato .json.',
+      totalItens: '${historicoTorneios.length} torneios salvos',
+      labelExportar: 'Exportar Torneios (.json)',
+      labelImportar: 'Importar Torneios (.json)',
+      onExportar: () => _exportar(context),
+      onImportar: () => _importar(context),
     );
   }
 }
@@ -1204,6 +1547,7 @@ class _TelaSorteioState extends State<TelaSorteio> {
   int _qtdPorTime = 5;
   int _regraSorteio = 2;
   bool _considerarGoleiros = true;
+  bool _restanteEquilibrado = false;
   final Map<Nota, int> _notasManuais = {
     Nota.A: 1,
     Nota.B: 1,
@@ -1326,6 +1670,88 @@ class _TelaSorteioState extends State<TelaSorteio> {
         'bd_historico', jsonEncode(historicoSorteios.map((h) => h.toMap()).toList()));
   }
 
+  // NOVO: Painel para editar o time e definir cores
+  void _editarTimeSorteado(HistoricoSorteio historico, TimeSorteado time) {
+    TextEditingController nomeCtrl = TextEditingController(text: time.nome);
+    int cor1 = time.corPrimaria;
+    int cor2 = time.corSecundaria;
+
+    final List<Color> paleta = [
+      Colors.red, Colors.pink, Colors.purple, Colors.deepPurple,
+      Colors.indigo, Colors.blue, Colors.lightBlue, Colors.cyan,
+      Colors.teal, Colors.green, Colors.lightGreen, Colors.lime,
+      Colors.yellow, Colors.amber, Colors.orange, Colors.deepOrange,
+      Colors.brown, Colors.grey, Colors.black, Colors.white,
+    ];
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setStateDialog) {
+          return AlertDialog(
+            title: const Text('Personalizar Equipe', textAlign: TextAlign.center),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(controller: nomeCtrl, decoration: const InputDecoration(labelText: 'Nome da Equipe', border: OutlineInputBorder())),
+                  const SizedBox(height: 20),
+                  const Text('Cor Principal:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 5),
+                  Wrap(
+                    spacing: 5, runSpacing: 5,
+                    children: paleta.map((c) => InkWell(
+                      onTap: () => setStateDialog(() => cor1 = c.value),
+                      child: Container(width: 30, height: 30, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: cor1 == c.value ? Colors.blue : Colors.black12, width: cor1 == c.value ? 3 : 1))),
+                    )).toList(),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('Cor Secundária:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 5),
+                  Wrap(
+                    spacing: 5, runSpacing: 5,
+                    children: paleta.map((c) => InkWell(
+                      onTap: () => setStateDialog(() => cor2 = c.value),
+                      child: Container(width: 30, height: 30, decoration: BoxDecoration(color: c, shape: BoxShape.circle, border: Border.all(color: cor2 == c.value ? Colors.blue : Colors.black12, width: cor2 == c.value ? 3 : 1))),
+                    )).toList(),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.grey))),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                onPressed: () async {
+                  // VALIDAÇÃO EXATA: Não pode ter combinação de cores repetidas!
+                  bool coresRepetidas = historico.times.any((t) => t != time && t.corPrimaria == cor1 && t.corSecundaria == cor2);
+                  if (coresRepetidas) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Esta combinação de cores já pertence a outro time! Escolha outra.'), backgroundColor: Colors.red));
+                    return;
+                  }
+                  
+                  setState(() {
+                    time.nome = nomeCtrl.text.trim().isEmpty ? time.nome : nomeCtrl.text.trim();
+                    time.corPrimaria = cor1;
+                    time.corSecundaria = cor2;
+                  });
+                  
+                  // Salva imediatamente
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString('bd_historico', jsonEncode(historicoSorteios.map((h) => h.toMap()).toList()));
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Salvar'),
+              )
+            ],
+          );
+        }
+      )
+    );
+  }
+
   void _realizarSorteio() {
     final ativos = jogadoresCadastrados.where((j) => j.presente).toList();
     if (ativos.isEmpty) {
@@ -1349,8 +1775,19 @@ class _TelaSorteioState extends State<TelaSorteio> {
     }
 
     final qtdTimes = (linha.length / _qtdPorTime).ceil();
-    final times = List.generate(
-        qtdTimes, (i) => TimeSorteado(nome: 'Time ${i + 1}', jogadores: []));
+    
+    // NOVO: Gera cores automáticas para que os times padrão já não sejam iguais
+    final List<Color> paletaAuto = [Colors.red, Colors.blue, Colors.green, Colors.orange, Colors.purple, Colors.teal, Colors.brown, Colors.indigo, Colors.black, Colors.blueGrey];
+    paletaAuto.shuffle();
+    
+    final times = List.generate(qtdTimes, (i) {
+      Color c1 = paletaAuto[i % paletaAuto.length];
+      Color c2 = paletaAuto[(i + 1) % paletaAuto.length];
+      return TimeSorteado(
+        nome: 'Time ${i + 1}', jogadores: [], 
+        corPrimaria: c1.value, corSecundaria: c2.value
+      );
+    });
 
     final capacidadesLinha = List.filled(qtdTimes, _qtdPorTime);
     final resto = linha.length % _qtdPorTime;
@@ -1397,7 +1834,42 @@ class _TelaSorteioState extends State<TelaSorteio> {
           }
         }
       }
-      for (var j in linhaRestante) alocarLinha(j);
+      // NOVO: Distribui os restantes conforme a opção escolhida
+      if (_restanteEquilibrado) {
+        // Snake draft: ordena por nota e distribui alternando os times
+        linhaRestante.sort((a, b) => a.nota.index.compareTo(b.nota.index));
+        bool sentidoPositivo = true;
+        int idxTime = 0;
+        for (var j in linhaRestante) {
+          // Encontra o próximo time com vaga disponível
+          int tentativas = 0;
+          while (getQtdLinha(times[idxTime]) >= capacidadesLinha[idxTime] &&
+              tentativas < qtdTimes) {
+            idxTime = (idxTime + 1) % qtdTimes;
+            tentativas++;
+          }
+          times[idxTime].jogadores.add(j);
+
+          // Avança no sentido do snake
+          if (sentidoPositivo) {
+            if (idxTime >= qtdTimes - 1) {
+              sentidoPositivo = false;
+            } else {
+              idxTime++;
+            }
+          } else {
+            if (idxTime <= 0) {
+              sentidoPositivo = true;
+            } else {
+              idxTime--;
+            }
+          }
+        }
+      } else {
+        // Aleatório (comportamento original)
+        linhaRestante.shuffle();
+        for (var j in linhaRestante) alocarLinha(j);
+      }
     }
 
     _mostrarResultado(times);
@@ -1528,6 +2000,26 @@ class _TelaSorteioState extends State<TelaSorteio> {
                     ])
                   ],
                 )),
+                const Divider(),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        'Equilibrar Restantes?',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        _restanteEquilibrado
+                            ? 'Restantes divididos por nota (snake draft)'
+                            : 'Restantes divididos aleatoriamente',
+                        style: TextStyle(
+                          color: _restanteEquilibrado ? Colors.green : Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                      value: _restanteEquilibrado,
+                      activeColor: Colors.green,
+                      onChanged: (val) => setState(() => _restanteEquilibrado = val),
+                    ),
           ],
           const SizedBox(height: 20),
           ElevatedButton(
@@ -1573,7 +2065,17 @@ class _TelaSorteioState extends State<TelaSorteio> {
                       ),
                     ],
                   ),
-                  children: item.times.map((t) => ListTile(dense: true, title: Text(t.nome, style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text(t.jogadores.map((j) => j.nome).join(', ')))).toList(),
+                  children: item.times.map((t) => ListTile(
+                    dense: true, 
+                    leading: construirEscudo(t, tamanho: 30),
+                    title: Text(t.nome, style: const TextStyle(fontWeight: FontWeight.bold)), 
+                    subtitle: Text(t.jogadores.map((j) => j.nome).join(', ')),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.blue),
+                      tooltip: 'Editar Nome e Cores',
+                      onPressed: () => _editarTimeSorteado(item, t),
+                    ),
+                  )).toList(),
                 ),
               );
             }),
@@ -1959,7 +2461,13 @@ class _TorneioDetalhesScreenState extends State<TorneioDetalhesScreen> {
             DataColumn(label: Text('GP')), DataColumn(label: Text('GC')), DataColumn(label: Text('SG'))
           ],
           rows: ordenada.map((est) => DataRow(cells: [
-            DataCell(Text(est.time.nome, style: const TextStyle(fontWeight: FontWeight.bold))), 
+            DataCell(Row(
+              children: [
+                construirEscudo(est.time, tamanho: 20),
+                const SizedBox(width: 8),
+                Text(est.time.nome, style: const TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            )), 
             DataCell(Text('${est.pontos}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue))), 
             DataCell(Text('${est.jogos}')), DataCell(Text('${est.vitorias}')), DataCell(Text('${est.empates}')), 
             DataCell(Text('${est.derrotas}')), DataCell(Text('${est.golsPro}')), DataCell(Text('${est.golsContra}')), 
@@ -1967,6 +2475,38 @@ class _TorneioDetalhesScreenState extends State<TorneioDetalhesScreen> {
           ])).toList(),
         ),
       ),
+    );
+  }
+
+  Widget _buildListaPartidas() {
+    if (widget.torneio.partidas.isEmpty) return const Center(child: Text('Nenhuma partida gerada.', style: TextStyle(color: Colors.grey)));
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: widget.torneio.partidas.length,
+      itemBuilder: (ctx, idx) {
+        final p = widget.torneio.partidas[idx];
+        return Card(
+          color: p.encerrada ? Colors.green.shade50 : Colors.white,
+          child: ListTile(
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                construirEscudo(p.timeA.time, tamanho: 22),
+                const SizedBox(width: 8),
+                Text('${p.timeA.time.nome}  ${p.placarA}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const Text('  ×  ', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey, fontSize: 16)),
+                Text('${p.placarB}  ${p.timeB.time.nome}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(width: 8),
+                construirEscudo(p.timeB.time, tamanho: 22),
+              ],
+            ),
+            subtitle: Text(p.encerrada ? 'Encerrada (Toque para ver detalhes)' : 'Toque para apitar o jogo', textAlign: TextAlign.center, style: TextStyle(color: p.encerrada ? Colors.green : Colors.grey)),
+            onTap: () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => PainelPartidaModal(torneio: widget.torneio, partida: p, onGameUpdated: () => setState(() {}))));
+            },
+          ),
+        );
+      },
     );
   }
 
